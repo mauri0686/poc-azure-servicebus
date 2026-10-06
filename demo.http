@@ -1,38 +1,38 @@
-### Correr con: dotnet run --project src/Orders  (perfil http: puerto 44050)
+### Run with: dotnet run --project src/Orders  (http profile: port 44050)
 @host = http://localhost:44050
 
-### 1. Pedido normal -> lo procesa el consumer y publica OrderProcessed (solo lo ve "all-orders")
+### 1. Regular order -> the consumer processes it and publishes OrderProcessed (only "all-orders" gets it)
 POST {{host}}/orders
 Content-Type: application/json
 
 { "customer": "ana", "product": "book", "amount": 50 }
 
-### 2. Pedido grande -> lo ven las DOS subscriptions ("high-value" filtra amount > 1000)
+### 2. Large order -> BOTH subscriptions get it ("high-value" filters amount > 1000)
 POST {{host}}/orders
 Content-Type: application/json
 
 { "customer": "bruno", "product": "laptop", "amount": 2500 }
 
-### 3. Duplicate detection: mandalo DOS veces seguidas con el mismo id -> el broker descarta la segunda
+### 3. Duplicate detection: send it TWICE in a row with the same id -> the broker drops the second one
 POST {{host}}/orders
 Content-Type: application/json
 
 { "id": "11111111-1111-1111-1111-111111111111", "customer": "carla", "product": "pen", "amount": 5 }
 
-### 4. Pedido inválido -> dead-letter explícito con motivo, sin reintentos
+### 4. Invalid order -> explicit dead-letter with a reason, no retries
 POST {{host}}/orders
 Content-Type: application/json
 
 { "customer": "dani", "product": "mouse", "amount": 0 }
 
-### 5. Falla transitoria -> 3 intentos (MaxDeliveryCount) y termina en la DLQ sola
+### 5. Transient failure -> 3 attempts (MaxDeliveryCount), then it lands in the DLQ on its own
 POST {{host}}/orders
 Content-Type: application/json
 
 { "customer": "eli", "product": "flaky", "amount": 30 }
 
-### 6. Ver la DLQ (peek, no consume)
+### 6. Look at the DLQ (peek, does not consume)
 GET {{host}}/dlq
 
-### 7. Reprocesar la DLQ (el "flaky" ahora pasa; el inválido vuelve a la DLQ)
+### 7. Replay the DLQ (the "flaky" one now succeeds; the invalid one goes back to the DLQ)
 POST {{host}}/dlq/replay

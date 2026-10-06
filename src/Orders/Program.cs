@@ -3,8 +3,8 @@ using Orders;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Emulador local por defecto (appsettings). En Azure real: connection string del namespace o, mejor,
-// new ServiceBusClient("<ns>.servicebus.windows.net", new DefaultAzureCredential()) con Managed Identity.
+// Local emulator by default (appsettings). On real Azure: the namespace connection string or, better,
+// new ServiceBusClient("<ns>.servicebus.windows.net", new DefaultAzureCredential()) with Managed Identity.
 builder.Services.AddSingleton(new ServiceBusClient(builder.Configuration["ServiceBus:ConnectionString"]));
 builder.Services.AddSingleton<IdempotencyStore>();
 builder.Services.AddHostedService<OrderConsumer>();
@@ -12,8 +12,8 @@ builder.Services.AddHostedService<SubscriptionListeners>();
 
 var app = builder.Build();
 
-// Publica un pedido en la cola. MessageId = Id del pedido: si se manda dos veces dentro de la ventana de
-// duplicate detection, el broker descarta la segunda copia.
+// Publishes an order to the queue. MessageId = order Id: if it is sent twice within the
+// duplicate detection window, the broker drops the second copy.
 app.MapPost("/orders", async (Order order, ServiceBusClient client) =>
 {
     var o = order.Id == Guid.Empty ? order with { Id = Guid.NewGuid() } : order;
@@ -27,7 +27,7 @@ app.MapPost("/orders", async (Order order, ServiceBusClient client) =>
     return Results.Accepted($"/orders/{o.Id}", o);
 });
 
-// Mira la dead-letter queue sin consumirla (peek).
+// Looks at the dead-letter queue without consuming it (peek).
 app.MapGet("/dlq", async (ServiceBusClient client) =>
 {
     var receiver = client.CreateReceiver(Names.Queue, new ServiceBusReceiverOptions { SubQueue = SubQueue.DeadLetter });
@@ -35,7 +35,7 @@ app.MapGet("/dlq", async (ServiceBusClient client) =>
     return msgs.Select(m => new { m.MessageId, m.DeadLetterReason, m.DeadLetterErrorDescription, m.DeliveryCount });
 });
 
-// Reprocesa la DLQ: la lee, reenvía una copia a la cola marcada como replay y recién ahí completa el original.
+// Replays the DLQ: reads it, sends a copy flagged as replay back to the queue, and only then completes the original.
 app.MapPost("/dlq/replay", async (ServiceBusClient client) =>
 {
     var receiver = client.CreateReceiver(Names.Queue, new ServiceBusReceiverOptions { SubQueue = SubQueue.DeadLetter });
@@ -43,7 +43,7 @@ app.MapPost("/dlq/replay", async (ServiceBusClient client) =>
     var replayed = 0;
     foreach (var m in await receiver.ReceiveMessagesAsync(maxMessages: 20, maxWaitTime: TimeSpan.FromSeconds(2)))
     {
-        var copy = new ServiceBusMessage(m) { MessageId = $"{m.MessageId}-replay" }; // id nuevo: si no, duplicate detection la descarta
+        var copy = new ServiceBusMessage(m) { MessageId = $"{m.MessageId}-replay" }; // new id, otherwise duplicate detection drops it
         copy.ApplicationProperties["replay"] = true;
         await sender.SendMessageAsync(copy);
         await receiver.CompleteMessageAsync(m);

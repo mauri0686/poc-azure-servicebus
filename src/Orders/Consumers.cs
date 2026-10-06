@@ -3,7 +3,7 @@ using Azure.Messaging.ServiceBus;
 
 namespace Orders;
 
-// Consume la cola "orders" en modo peek-lock: el mensaje queda bloqueado hasta Complete/Abandon/DeadLetter.
+// Consumes the "orders" queue in peek-lock mode: the message stays locked until Complete/Abandon/DeadLetter.
 public class OrderConsumer(ServiceBusClient client, IdempotencyStore store, ILogger<OrderConsumer> log) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -11,7 +11,7 @@ public class OrderConsumer(ServiceBusClient client, IdempotencyStore store, ILog
         var publisher = client.CreateSender(Names.Topic);
         var processor = client.CreateProcessor(Names.Queue, new ServiceBusProcessorOptions
         {
-            AutoCompleteMessages = false, // completamos a mano, solo si salió bien
+            AutoCompleteMessages = false, // we complete by hand, only when processing succeeded
             MaxConcurrentCalls = 4,
         });
 
@@ -30,33 +30,33 @@ public class OrderConsumer(ServiceBusClient client, IdempotencyStore store, ILog
                     await args.DeadLetterMessageAsync(msg, "Invalid", reason, ct);
                     return;
                 case Outcome.Transient:
-                    // No completamos: la excepción hace que el processor haga Abandon y el mensaje vuelva a la cola.
-                    log.LogWarning("Falla transitoria {Id} (intento {Count})", msg.MessageId, msg.DeliveryCount);
+                    // Not completed: the exception makes the processor abandon it and the message goes back to the queue.
+                    log.LogWarning("Transient failure {Id} (attempt {Count})", msg.MessageId, msg.DeliveryCount);
                     throw new InvalidOperationException(reason);
             }
 
-            // Idempotencia: Service Bus garantiza "al menos una vez", así que el mismo mensaje puede llegar 2 veces.
+            // Idempotency: Service Bus delivers "at least once", so the same message can arrive twice.
             if (!store.TryStart(msg.MessageId))
             {
-                log.LogInformation("Duplicado ignorado {Id}", msg.MessageId);
+                log.LogInformation("Duplicate ignored {Id}", msg.MessageId);
                 await args.CompleteMessageAsync(msg, ct);
                 return;
             }
 
-            log.LogInformation("Procesado {Id} {Customer} {Amount}", order!.Id, order.Customer, order.Amount);
+            log.LogInformation("Processed {Id} {Customer} {Amount}", order!.Id, order.Customer, order.Amount);
             var evt = new ServiceBusMessage(BinaryData.FromObjectAsJson(order))
             {
                 Subject = "OrderProcessed",
                 MessageId = $"{order.Id}-processed",
             };
-            evt.ApplicationProperties["amount"] = (double)order.Amount; // la SQL filter de "high-value" lee esto
+            evt.ApplicationProperties["amount"] = (double)order.Amount; // the "high-value" SQL filter reads this
             await publisher.SendMessageAsync(evt, ct);
             await args.CompleteMessageAsync(msg, ct);
         };
 
         processor.ProcessErrorAsync += args =>
         {
-            log.LogError(args.Exception, "Error en {Entity}", args.EntityPath);
+            log.LogError(args.Exception, "Error on {Entity}", args.EntityPath);
             return Task.CompletedTask;
         };
 
@@ -66,7 +66,7 @@ public class OrderConsumer(ServiceBusClient client, IdempotencyStore store, ILog
     }
 }
 
-// Topic "order-events" con 2 subscriptions: cada una recibe SU copia (pub/sub), con filtro distinto.
+// Topic "order-events" with 2 subscriptions: each one gets its own copy (pub/sub), with a different filter.
 public class SubscriptionListeners(ServiceBusClient client, ILogger<SubscriptionListeners> log) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -76,9 +76,9 @@ public class SubscriptionListeners(ServiceBusClient client, ILogger<Subscription
             var p = client.CreateProcessor(Names.Topic, sub);
             p.ProcessMessageAsync += args =>
             {
-                log.LogInformation("[{Sub}] recibió {Id} amount={Amount}", sub, args.Message.MessageId,
+                log.LogInformation("[{Sub}] received {Id} amount={Amount}", sub, args.Message.MessageId,
                     args.Message.ApplicationProperties["amount"]);
-                return Task.CompletedTask; // AutoComplete=true por defecto
+                return Task.CompletedTask; // AutoComplete is true by default
             };
             p.ProcessErrorAsync += args => { log.LogError(args.Exception, "[{Sub}] error", sub); return Task.CompletedTask; };
             return p;

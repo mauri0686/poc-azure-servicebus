@@ -1,48 +1,43 @@
-# POC Azure Service Bus: pedidos con cola, topic, reintentos y dead-letter
+# Azure Service Bus POC: orders with a queue, a topic, retries and dead-lettering
 
-POC personal para cerrar la brecha "Azure Service Bus" (rechazos de Nir Yu y CaseWorthy). Corre local
-con el **emulador oficial** de Service Bus, sin gastar Azure.
+A small .NET 8 proof of concept that exercises the core Azure Service Bus patterns end to end. It runs
+locally against the **official Service Bus emulator**, so it costs nothing in Azure.
 
-> Honestidad en entrevistas: esto **no es experiencia en producción**. La frase es:
-> *"No lo usé en producción, pero armé un POC con una API que publica en una cola de Service Bus, un
-> consumer con peek-lock, reintentos, dead-letter e idempotencia, y un topic con dos subscriptions
-> filtradas. El patrón lo conozco de DDD y de idempotencia en pagos."*
+## What it demonstrates
 
-## Qué demuestra
-
-| Concepto | Dónde |
+| Concept | Where |
 |---|---|
-| Cola con **peek-lock** y `Complete` manual | `OrderConsumer` (`AutoCompleteMessages = false`) |
-| **Reintentos** y **dead-letter automática** al pasar `MaxDeliveryCount` (3) | producto `flaky` |
-| **Dead-letter explícito** con motivo (sin reintentar lo que nunca va a andar) | `amount <= 0` |
-| **Duplicate detection** del broker (`MessageId` = id del pedido, ventana 1 min) | mismo id dos veces |
-| **Idempotencia del consumer** (Service Bus es *al menos una vez*) | `IdempotencyStore` |
-| **Topic + 2 subscriptions** (pub/sub), una con **SQL filter** `amount > 1000` | `SubscriptionListeners` + `emulator/Config.json` |
-| **Reprocesar la DLQ** | `POST /dlq/replay` |
+| Queue in **peek-lock** mode with manual `Complete` | `OrderConsumer` (`AutoCompleteMessages = false`) |
+| **Retries** and **automatic dead-lettering** after `MaxDeliveryCount` (3) | product `flaky` |
+| **Explicit dead-lettering** with a reason (no point retrying what will never work) | `amount <= 0` |
+| Broker-side **duplicate detection** (`MessageId` = order id, 1-minute window) | same id sent twice |
+| **Idempotent consumer** (Service Bus delivers *at least once*) | `IdempotencyStore` |
+| **Topic + 2 subscriptions** (pub/sub), one with a **SQL filter** `amount > 1000` | `SubscriptionListeners` + `emulator/Config.json` |
+| **Replaying the DLQ** | `POST /dlq/replay` |
 
-## Cómo correrlo
+## How to run it
 
-1. Instalar **Docker Desktop** (hoy no está en esta PC).
-2. `docker compose up -d` (levanta el emulador + Azure SQL Edge; la primera vez tarda).
+1. Install **Docker Desktop**.
+2. `docker compose up -d` (starts the emulator plus Azure SQL Edge; the first run takes a while).
 3. `dotnet run --project src/Orders`
-4. Abrir `demo.http` en Rider o VS Code y ejecutar los pasos en orden, mirando la consola.
-5. Tests de la lógica (no necesitan Docker): `dotnet test`
+4. Open `demo.http` in Rider or VS Code and run the requests in order while watching the console.
+5. Unit tests for the decision logic (no Docker needed): `dotnet test`
 
-Contra Azure real: crear un namespace **Standard** (los topics no existen en Basic), crear la cola y el
-topic con las mismas propiedades de `emulator/Config.json` y poner la connection string en
-`ServiceBus:ConnectionString`. Borrar el resource group al terminar.
+Against real Azure: create a **Standard** namespace (Basic has no topics), create the queue and the topic
+with the same properties as `emulator/Config.json`, and set `ServiceBus:ConnectionString`. Delete the
+resource group when you are done.
 
-## Lo que te van a preguntar
+## Key concepts
 
-- **Cola vs topic**: en la cola cada mensaje lo procesa UN consumidor (competing consumers). En el topic cada subscription recibe su copia (pub/sub) y puede filtrar.
-- **Peek-lock vs receive-and-delete**: peek-lock bloquea el mensaje durante el `LockDuration`; si no hacés `Complete` vuelve a la cola. Receive-and-delete lo borra al leerlo: más rápido, pero si el proceso se cae se pierde.
-- **Dead-letter queue**: sub-cola donde caen los mensajes que superan `MaxDeliveryCount`, que expiran, o que el código manda a propósito con un motivo. Se monitorea y se reprocesa.
-- **Duplicate detection vs idempotencia**: el broker descarta el mismo `MessageId` dentro de una ventana, pero la entrega es *al menos una vez* (un lock que vence reentrega). Por eso el consumer igual tiene que ser idempotente.
-- **Sessions**: orden FIFO garantizado por clave (por ejemplo, todos los mensajes de un mismo pedido).
-- **Service Bus vs Storage Queues vs Event Grid vs Event Hubs**: Service Bus = mensajería de negocio con garantías (DLQ, sessions, transacciones). Storage Queue = cola simple y barata. Event Grid = notificación reactiva de que algo pasó. Event Hubs = streaming de alto volumen (telemetría, tipo Kafka).
-- **Seguridad**: en Azure, sin connection strings: `ServiceBusClient` con `DefaultAzureCredential` y **Managed Identity** con rol *Azure Service Bus Data Sender/Receiver*.
+- **Queue vs topic**: in a queue each message is processed by ONE consumer (competing consumers). In a topic each subscription gets its own copy (pub/sub) and can filter.
+- **Peek-lock vs receive-and-delete**: peek-lock locks the message for `LockDuration`; if it is not completed, it goes back to the queue. Receive-and-delete removes it on read: faster, but the message is lost if the process crashes.
+- **Dead-letter queue**: a sub-queue for messages that exceed `MaxDeliveryCount`, expire, or are dead-lettered on purpose with a reason. It must be monitored and replayed.
+- **Duplicate detection vs idempotency**: the broker drops the same `MessageId` within a time window, but delivery is still *at least once* (an expired lock means redelivery), so the consumer must be idempotent anyway.
+- **Sessions**: guaranteed FIFO ordering per key (for example, all messages for the same order).
+- **Service Bus vs Storage Queues vs Event Grid vs Event Hubs**: Service Bus is business messaging with guarantees (DLQ, sessions, transactions). Storage Queues are a simple, cheap queue. Event Grid is reactive notification that something happened. Event Hubs is high-volume streaming (telemetry, Kafka-like).
+- **Security**: in Azure, no connection strings: `ServiceBusClient` with `DefaultAzureCredential` and a **Managed Identity** holding the *Azure Service Bus Data Sender/Receiver* role.
 
-## Próximos pasos (POC 1 completo, ver `interview-prep/brechas-rechazos-pocs.md`)
+## Next steps
 
-- Reemplazar el `BackgroundService` por una **Azure Function** con trigger de Service Bus (isolated worker).
-- Secretos en **Key Vault** con Managed Identity, deploy con **Azure DevOps** y logs en Application Insights.
+- Replace the `BackgroundService` consumer with an **Azure Function** using a Service Bus trigger (isolated worker).
+- Secrets in **Key Vault** via Managed Identity, deployment through an **Azure DevOps** pipeline, logs in Application Insights.

@@ -1,4 +1,4 @@
-# Emulador oficial de Azure Service Bus (necesita un SQL Server para guardar estado).
+# Official Azure Service Bus emulator (it needs a SQL Server to store its state).
 services:
   servicebus:
     image: mcr.microsoft.com/azure-messaging/servicebus-emulator:latest
